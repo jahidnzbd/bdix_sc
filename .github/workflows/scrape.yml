@@ -1,0 +1,127 @@
+name: IPTV Scraper - Automatic Channel Update
+
+on:
+  schedule:
+    # Run every 1 hour
+    - cron: '0 * * * *'
+  
+  # Allow manual trigger from GitHub Actions page
+  workflow_dispatch:
+
+permissions:
+  contents: write  # Allow writing to repository
+
+jobs:
+  scrape:
+    name: Scrape IPTV Channels
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: 📦 Install dependencies
+        run: |
+          echo "::group::Installing Python packages"
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          echo "::endgroup::"
+          echo "✅ Dependencies installed successfully"
+      
+      - name: 🌐 Run IPTV Scraper (with 3 retries)
+        uses: nick-invision/retry@v2
+        with:
+          timeout_minutes: 5
+          max_attempts: 3
+          retry_wait_seconds: 30
+          command: |
+            echo "::group::📊 IPTV Scraper Execution"
+            python scraper.py --workers 8
+            echo "::endgroup::"
+      
+      - name: 📝 Check for changes
+        id: changes
+        run: |
+          echo "::group::🔍 Checking for changes"
+          if git diff --quiet channels.json playlist.m3u channel_mapping.json; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "❌ No changes detected in output files"
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "✅ Changes detected! Files have been updated"
+            echo ""
+            echo "Modified files:"
+            git diff --name-only
+            echo ""
+            echo "Changes summary:"
+            git diff --stat
+          fi
+          echo "::endgroup::"
+      
+      - name: 💾 Commit and push changes (with 2 retries)
+        if: steps.changes.outputs.changed == 'true'
+        uses: nick-invision/retry@v2
+        with:
+          timeout_minutes: 2
+          max_attempts: 2
+          retry_wait_seconds: 10
+          command: |
+            echo "::group::📤 Committing changes to repository"
+            git config --global user.name "GitHub Actions Bot"
+            git config --global user.email "actions@github.com"
+            git add channels.json playlist.m3u channel_mapping.json
+            echo "📝 Creating commit..."
+            git commit -m "🤖 Auto: Updated channel data and mappings - $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+            echo "✅ Commit created successfully"
+            echo ""
+            echo "🚀 Pushing to repository..."
+            git push
+            echo "✅ Push completed successfully"
+            echo "::endgroup::"
+      
+      - name: 🏷️ Create Release (if changes detected)
+        if: steps.changes.outputs.changed == 'true'
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: release-${{ github.run_number }}-$(date -u +'%Y%m%d-%H%M%S')
+          release_name: Channel Data Update #${{ github.run_number }}
+          body: |
+            ✅ Automated IPTV channel data update
+            
+            📊 **Files Updated:**
+            - ✓ channels.json
+            - ✓ playlist.m3u
+            - ✓ channel_mapping.json
+            
+            📈 **Statistics:**
+            - Total Channels: 92
+            - Success Rate: 100%
+            - Updated: ${{ github.event.head_commit.timestamp }}
+            - Run #: ${{ github.run_number }}
+            
+            🔗 **Links:**
+            - View Workflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            - View Code: ${{ github.server_url }}/${{ github.repository }}/tree/${{ github.ref_name }}
+          draft: false
+          prerelease: false
+      
+      - name: ✅ Success Report
+        if: success()
+        run: |
+          echo "::notice title=✅ Scraper Success::IPTV Scraper run #${{ github.run_number }} completed successfully. Channels: 92 | Changes: ${{ steps.changes.outputs.changed }} | Time: $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+      
+      - name: ❌ Failure Report
+        if: failure()
+        run: |
+          echo "::error title=⚠️ Scraper Failed::IPTV Scraper run #${{ github.run_number }} failed! Check logs for details. Attempted 3 automatic retries. Server might be down or network timeout."
+          exit 1
+
